@@ -1,0 +1,29 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Train CUT",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_cut.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--data_root", "data/vindr/images-flip",
+                "--annotations", "data/vindr/finding_annotations.csv", 
+                "--split", "training", 
+                "--output_dir", "runs/cut_exp"                
+            ]
+        }
+
+    ]
+}

@@ -71,6 +71,7 @@ def load_mammogram(path: str, size: int = 512, flip: bool = False) -> np.ndarray
 
 
 if __name__ == "__main__":
+    import csv
     from pathlib import Path
     from tqdm import tqdm
 
@@ -78,10 +79,23 @@ if __name__ == "__main__":
     parser.add_argument("--dicom_path", help="path to dicom images", type=str, required=True)
     parser.add_argument("--output_path", help="path to output images", type=str, required=True)
     parser.add_argument("--size", help="output image size (default 512)", type=int, default=512)
+    parser.add_argument(
+        "--annotations",
+        help="path to breast-level_annotations.csv; when provided, right-side (R) images are flipped horizontally",
+        type=str,
+        default=None,
+    )
     args = parser.parse_args()
 
     dicom_path = Path(args.dicom_path)
     output_path = Path(args.output_path)
+
+    # Build image_id → laterality lookup from the annotations CSV.
+    laterality: dict[str, str] = {}
+    if args.annotations:
+        with open(args.annotations, newline="") as f:
+            for row in csv.DictReader(f):
+                laterality[row["image_id"]] = row["laterality"]
 
     files = [p for p in dicom_path.rglob("*") if p.suffix.lower() in {".dcm", ".dicom"}]
 
@@ -90,5 +104,6 @@ if __name__ == "__main__":
         if dst.exists():
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
-        img = load_mammogram(str(src), size=args.size)
+        flip = laterality.get(src.stem) == "R"
+        img = load_mammogram(str(src), size=args.size, flip=flip)
         cv2.imwrite(str(dst), img)
