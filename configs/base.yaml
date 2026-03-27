@@ -1,0 +1,9 @@
+# Experiment config — override only what differs from configs/defaults.yaml.
+# Copy this file and edit for each experiment.
+
+data:
+  root: "data/vindr/images-flip"
+  annotations: "data/vindr/finding_annotations.csv"
+
+output:
+  dir: "runs/cut_exp1"

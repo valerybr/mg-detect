@@ -18,10 +18,7 @@
             "program": "${workspaceFolder}/train_cut.py",
             "console": "integratedTerminal",
             "args": [
-                "--data_root", "data/vindr/images-flip",
-                "--annotations", "data/vindr/finding_annotations.csv", 
-                "--split", "training", 
-                "--output_dir", "runs/cut_exp"                
+                "--config", "${workspaceFolder}/configs/base.yaml"
             ]
         }
 

@@ -1,0 +1,30 @@
+data:
+  root: ""            # required: {study_id}/{image_id}.png layout
+  annotations: ""     # required: path to finding_annotations.csv
+  split: "training"   # "training" | "test"
+  img_size: 512
+  flip_right: false   # set true if PNGs were not flipped during DICOM conversion
+
+model:
+  ngf: 64             # base channel count for generators
+  ndf: 64             # base channel count for discriminators
+  n_blocks: 9         # residual blocks in generator bottleneck
+  nce_layers: [3, 6, 9]  # encoder layer indices for PatchNCE
+  num_patches: 256    # patches sampled per NCE layer per image
+  temperature: 0.07   # PatchNCE temperature τ
+
+train:
+  batch_size: 1
+  num_workers: 4
+  n_epochs: 100       # epochs with constant LR
+  n_epochs_decay: 100 # epochs over which LR linearly decays to 0
+  lr: 2e-4
+  beta1: 0.5          # Adam β₁
+  lambda_nce: 1.0
+  lambda_cyc: 10.0
+  lambda_idt: 5.0
+  save_every: 10      # save checkpoint every N epochs
+  resume: ""          # path to checkpoint; empty = train from scratch
+
+output:
+  dir: ""             # required: directory for checkpoints and logs
