@@ -47,16 +47,29 @@ class PatchNCELoss(nn.Module):
     def forward(self, feat_q: torch.Tensor, feat_k: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            feat_q: [N, C]  — query embeddings (from generated image)
-            feat_k: [N, C]  — key   embeddings (from source image, same positions)
+            feat_q: [N, C]  — query embeddings (from generated image), L2-normed
+            feat_k: [N, C]  — key   embeddings (from source image, same positions), L2-normed
         Returns:
             scalar NCE loss
         """
         N = feat_q.shape[0]
-        # [N, N] cosine similarity matrix (feat already L2-normed by PatchMLP)
-        logits = torch.mm(feat_q, feat_k.t()) / self.temperature
-        # Positive pairs are on the diagonal
-        labels = torch.arange(N, device=feat_q.device)
+
+        # Positive logits: each query dot its corresponding key → [N, 1]
+        l_pos = (feat_q * feat_k).sum(dim=1, keepdim=True)
+
+        # Negative logits: each query dot all keys → [N, N]
+        l_neg = torch.mm(feat_q, feat_k.t())
+
+        # Mask diagonal so k_i is not used as a negative for query q_i;
+        # the positive pair is already captured in l_pos above.
+        diagonal = torch.eye(N, device=feat_q.device, dtype=torch.bool)
+        l_neg.masked_fill_(diagonal, -10.0)
+
+        # Concatenate positives (col 0) and negatives: [N, N+1]
+        logits = torch.cat([l_pos, l_neg], dim=1) / self.temperature
+
+        # Target 0: the positive is always the first column
+        labels = torch.zeros(N, dtype=torch.long, device=feat_q.device)
         return self.cross_entropy(logits, labels)
 
 
@@ -108,6 +121,7 @@ class CycleCUTModel(nn.Module):
         self.device = device
         self.nce_layers = nce_layers
         self.num_patches = num_patches
+        self.n_blocks = n_blocks
         self.lambda_nce = lambda_nce
         self.lambda_cyc = lambda_cyc
         self.lambda_idt = lambda_idt
@@ -122,7 +136,7 @@ class CycleCUTModel(nn.Module):
 
         # One PatchMLP per NCE layer; channel widths come from the generator.
         # For ngf=64: layer 0 → 64ch, layer 4 → 128ch, layer 8 → 256ch
-        nce_channels = self._nce_channel_sizes(ngf)
+        nce_channels = self._nce_channel_sizes(ngf, n_blocks)
         self.mlps_AB = nn.ModuleList(
             [PatchMLP(c).to(device) for c in nce_channels]
         )
@@ -160,43 +174,28 @@ class CycleCUTModel(nn.Module):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _nce_channel_sizes(self, ngf: int) -> list[int]:
+    def _nce_channel_sizes(self, ngf: int, n_blocks: int) -> list[int]:
         """Return output channel count at each nce_layer index.
 
-        The encoder ModuleList has this layout (indices):
-          0: ReflectionPad2d
-          1: Conv2d(1 → ngf)        ← layer index 1 output: ngf channels
-          2: InstanceNorm
-          3: ReLU
-          4: Conv2d(ngf → ngf*2, stride=2)   ← index 4: ngf*2
-          5: InstanceNorm
-          6: ReLU
-          7: Conv2d(ngf*2 → ngf*4, stride=2) ← index 7: ngf*4
-          8: InstanceNorm
-          9: ReLU
-
-        We default nce_layers=[0,4,8] which captures post-pad, post-first-down,
-        post-norm. The channel sizes depend on what the previous *conv* produced.
-        We hard-code a lookup rather than a dummy forward pass.
+        Flat generator layout (see ResnetGenerator docstring):
+          0          ReflectionPad2d          → in_channels (1)
+          1-3        Conv/Norm/ReLU           → ngf
+          4-6        Conv(stride=2)/Norm/ReLU → ngf×2
+          7-9        Conv(stride=2)/Norm/ReLU → ngf×4
+          10..9+n    ResBlock ×n_blocks       → ngf×4
+          ...        decoder layers
         """
-        # Map from layer index → output channels at that encoder position
-        # Encoder layout: [Pad, Conv(1→ngf), Norm, ReLU,
-        #                  Conv(ngf→ngf*2,s2), Norm, ReLU,
-        #                  Conv(ngf*2→ngf*4,s2), Norm, ReLU]
-        # Default nce_layers=[3,6,9] selects the three ReLU outputs.
-        index_to_channels = {
-            0: 1,           # ReflectionPad — same as input
-            1: ngf,
-            2: ngf,
-            3: ngf,         # ← ReLU after first conv
-            4: ngf * 2,
-            5: ngf * 2,
-            6: ngf * 2,     # ← ReLU after first downsample
-            7: ngf * 4,
-            8: ngf * 4,
-            9: ngf * 4,     # ← ReLU after second downsample
-        }
-        return [index_to_channels[i] for i in self.nce_layers]
+        ch: dict[int, int] = {}
+        ch[0] = 1
+        for i in range(1, 4):
+            ch[i] = ngf
+        for i in range(4, 7):
+            ch[i] = ngf * 2
+        for i in range(7, 10):
+            ch[i] = ngf * 4
+        for i in range(10, 10 + n_blocks):
+            ch[i] = ngf * 4
+        return [ch[i] for i in self.nce_layers]
 
     @staticmethod
     def _sample_patches(

@@ -6,4 +6,4 @@ data:
   annotations: "data/vindr/finding_annotations.csv"
 
 output:
-  dir: "runs/cut_exp1"
+  dir: "runs/cut_exp3"

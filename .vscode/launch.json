@@ -15,7 +15,7 @@
             "name": "Train CUT",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/train_cut.py",
+            "program": "${workspaceFolder}/train_cut_simple.py",
             "console": "integratedTerminal",
             "args": [
                 "--config", "${workspaceFolder}/configs/base.yaml"

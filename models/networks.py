@@ -37,21 +37,40 @@ class _ResBlock(nn.Module):
 class ResnetGenerator(nn.Module):
     """ResNet-based generator for unpaired image-to-image translation.
 
-    Architecture:
-        Encoder  : ReflectionPad → Conv(1→ngf) → 2× stride-2 downsampling
-        Bottleneck: n_blocks residual blocks
-        Decoder  : 2× upsampling → ReflectionPad → Conv(ngf→out_channels) → Tanh
+    All layers are stored in a single flat ``nn.ModuleList`` so that any layer
+    can be addressed by a global index, matching the original CUT paper's
+    ``nce_layers`` convention (default ``[0, 4, 8, 12, 16]``).
 
-    Intermediate encoder activations are exposed via ``encode`` so that
-    PatchNCE can extract multi-scale features.
+    Layer index map (n_blocks=9, ngf=64):
+        0  ReflectionPad2d(3)
+        1  Conv2d(in_ch → ngf, 7×7)
+        2  InstanceNorm2d
+        3  ReLU
+        4  Conv2d(ngf → ngf×2, stride=2)
+        5  InstanceNorm2d
+        6  ReLU
+        7  Conv2d(ngf×2 → ngf×4, stride=2)
+        8  InstanceNorm2d
+        9  ReLU
+        10 ResBlock #1  ┐
+        …               │ n_blocks entries
+        18 ResBlock #9  ┘
+        19 ConvTranspose2d(ngf×4 → ngf×2)
+        20 InstanceNorm2d
+        21 ReLU
+        22 ConvTranspose2d(ngf×2 → ngf)
+        23 InstanceNorm2d
+        24 ReLU
+        25 ReflectionPad2d(3)
+        26 Conv2d(ngf → out_ch, 7×7)
+        27 Tanh
     """
 
     def __init__(self, in_channels: int = 1, out_channels: int = 1,
                  ngf: int = 64, n_blocks: int = 9):
         super().__init__()
 
-        # Build encoder layers individually so we can index into them.
-        enc: list[nn.Module] = [
+        layers: list[nn.Module] = [
             nn.ReflectionPad2d(3),
             nn.Conv2d(in_channels, ngf, 7),
             _norm(ngf),
@@ -59,67 +78,45 @@ class ResnetGenerator(nn.Module):
         ]
         c = ngf
         for _ in range(2):
-            enc += [
+            layers += [
                 nn.Conv2d(c, c * 2, 3, stride=2, padding=1),
                 _norm(c * 2),
                 nn.ReLU(inplace=True),
             ]
             c *= 2
-
-        self.encoder = nn.ModuleList(enc)
-
-        self.bottleneck = nn.Sequential(*[_ResBlock(c) for _ in range(n_blocks)])
-
-        dec: list[nn.Module] = []
+        for _ in range(n_blocks):
+            layers.append(_ResBlock(c))
         for _ in range(2):
-            dec += [
+            layers += [
                 nn.ConvTranspose2d(c, c // 2, 3, stride=2, padding=1,
                                    output_padding=1),
                 _norm(c // 2),
                 nn.ReLU(inplace=True),
             ]
             c //= 2
-        dec += [
+        layers += [
             nn.ReflectionPad2d(3),
             nn.Conv2d(c, out_channels, 7),
             nn.Tanh(),
         ]
-        self.decoder = nn.Sequential(*dec)
 
-    # ------------------------------------------------------------------
-    # nce_layers refers to indices into self.encoder (0-based).
-    # Typical choice: [0, 4, 8] — after first conv, after 1st downsample,
-    # after 2nd downsample.
-    # ------------------------------------------------------------------
-
-    def encode(self, x: torch.Tensor,
-               nce_layers: list[int]) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        """Run encoder, collect intermediate features at requested layer indices.
-
-        Returns:
-            feat_last : final encoder output (input to bottleneck)
-            feats     : list of intermediate tensors at nce_layers indices
-        """
-        feats: list[torch.Tensor] = []
-        for i, layer in enumerate(self.encoder):
-            x = layer(x)
-            if i in nce_layers:
-                feats.append(x)
-        return x, feats
+        self.model = nn.ModuleList(layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.encoder:
+        for layer in self.model:
             x = layer(x)
-        x = self.bottleneck(x)
-        return self.decoder(x)
+        return x
 
     def forward_with_features(
         self, x: torch.Tensor, nce_layers: list[int]
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        """Full forward pass + intermediate encoder features for PatchNCE."""
-        enc_out, feats = self.encode(x, nce_layers)
-        out = self.decoder(self.bottleneck(enc_out))
-        return out, feats
+        """Full forward pass; collect intermediate outputs at ``nce_layers`` indices."""
+        feats: list[torch.Tensor] = []
+        for i, layer in enumerate(self.model):
+            x = layer(x)
+            if i in nce_layers:
+                feats.append(x)
+        return x, feats
 
 
 # ---------------------------------------------------------------------------
