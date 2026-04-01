@@ -27,6 +27,52 @@ def _crop_breast(img: np.ndarray) -> np.ndarray:
     return img[y : y + h, x : x + w]
 
 
+def count_up_continuing_ones(b_arr):
+    # indice continuing zeros from left side.
+    # ex: [0,1,1,0,1,0,0,1,1,1,0] -> [0,0,0,3,3,5,6,6,6,6,10]
+    left = np.arange(len(b_arr))
+    left[b_arr > 0] = 0
+    left = np.maximum.accumulate(left)
+
+    # from right side.
+    # ex: [0,1,1,0,1,0,0,1,1,1,0] -> [0,3,3,3,5,5,6,10,10,10,10]
+    rev_arr = b_arr[::-1]
+    right = np.arange(len(rev_arr))
+    right[rev_arr > 0] = 0
+    right = np.maximum.accumulate(right)
+    right = len(rev_arr) - 1 - right[::-1]
+
+    return right - left - 1
+
+
+def extract_breast(img):
+    """ Used in Mammo-CLIP preprocessing """
+    img_copy = img.copy()
+    img = np.where(img <= 40, 0, img)  # To detect backgrounds easily
+    height, _ = img.shape
+
+    # whether each col is non-constant or not
+    y_a = height // 2 + int(height * 0.4)
+    y_b = height // 2 - int(height * 0.4)
+    b_arr = img[y_b:y_a].std(axis=0) != 0
+    continuing_ones = count_up_continuing_ones(b_arr)
+    # longest should be the breast
+    col_ind = np.where(continuing_ones == continuing_ones.max())[0]
+    img = img[:, col_ind]
+
+    # whether each row is non-constant or not
+    _, width = img.shape
+    x_a = width // 2 + int(width * 0.4)
+    x_b = width // 2 - int(width * 0.4)
+    b_arr = img[:, x_b:x_a].std(axis=1) != 0
+    continuing_ones = count_up_continuing_ones(b_arr)
+    # longest should be the breast
+    row_ind = np.where(continuing_ones == continuing_ones.max())[0]
+
+    return img_copy[row_ind][:, col_ind]
+
+
+
 def load_mammogram(path: str, size: int = 512, flip: bool = False) -> np.ndarray:
     """Read a DICOM mammography file, remove background, crop breast, resize.
 
@@ -63,7 +109,8 @@ def load_mammogram(path: str, size: int = 512, flip: bool = False) -> np.ndarray
         img = (img - lo) / (hi - lo) * 255.0
     img = img.astype(np.uint8)
 
-    img = _crop_breast(img)
+    # img = _crop_breast(img)
+    img = extract_breast(img)
     if flip:
         img = cv2.flip(img, 1)
     img = _resize_with_pad(img, size)
@@ -71,6 +118,9 @@ def load_mammogram(path: str, size: int = 512, flip: bool = False) -> np.ndarray
 
 
 if __name__ == "__main__":
+
+    load_mammogram("data/1.dcm")
+
     import csv
     from pathlib import Path
     from tqdm import tqdm
