@@ -56,7 +56,7 @@ class Horse2ZebraDataset(Dataset):
 
         if split == "train":
             self.transform = transforms.Compose([
-                transforms.Resize(load_size, InterpolationMode.BICUBIC),
+                transforms.Resize((load_size, load_size), InterpolationMode.BICUBIC),
                 transforms.RandomCrop(img_size),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
