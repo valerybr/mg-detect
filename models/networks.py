@@ -13,6 +13,78 @@ def _norm(channels: int) -> nn.InstanceNorm2d:
     return nn.InstanceNorm2d(channels, affine=False, track_running_stats=False)
 
 
+def init_weights(net: nn.Module) -> nn.Module:
+    """Xavier normal initialization (gain=0.02), matching original CUT."""
+    for m in net.modules():
+        if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
+            nn.init.xavier_normal_(m.weight, gain=0.02)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+    return net
+
+
+def _get_filter(filt_size: int) -> torch.Tensor:
+    """Return a 2-D blur kernel (outer product of 1-D binomial filter)."""
+    kernels = {
+        1: [1.0],
+        2: [1.0, 1.0],
+        3: [1.0, 2.0, 1.0],
+        4: [1.0, 3.0, 3.0, 1.0],
+        5: [1.0, 4.0, 6.0, 4.0, 1.0],
+    }
+    a = torch.tensor(kernels[filt_size])
+    filt = a[:, None] * a[None, :]
+    return filt / filt.sum()
+
+
+class Downsample(nn.Module):
+    """Anti-aliased downsampling (Zhang, ICML 2019).
+
+    Applies a fixed blur kernel followed by strided subsampling.
+    Used as ``Conv(stride=1) → Downsample(stride=2)`` to replace
+    ``Conv(stride=2)``, reducing aliasing artifacts.
+    """
+
+    def __init__(self, channels: int, filt_size: int = 3, stride: int = 2):
+        super().__init__()
+        self.stride = stride
+        pad_size = (filt_size - 1) // 2
+        self.pad = nn.ReflectionPad2d([pad_size] * 4)
+        filt = _get_filter(filt_size)
+        self.register_buffer("filt", filt[None, None, :, :].repeat(channels, 1, 1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.conv2d(self.pad(x), self.filt, stride=self.stride, groups=x.shape[1])
+
+
+class Upsample(nn.Module):
+    """Anti-aliased upsampling (Zhang, ICML 2019).
+
+    Applies transposed convolution with a fixed blur kernel for upsampling.
+    Used as ``Upsample(stride=2) → Conv(stride=1)`` to replace
+    ``ConvTranspose2d(stride=2)``.
+    """
+
+    def __init__(self, channels: int, filt_size: int = 4, stride: int = 2):
+        super().__init__()
+        self.stride = stride
+        self.filt_odd = filt_size % 2 == 1
+        pad_size = (filt_size - 1) // 2
+        self.pad = nn.ReplicationPad2d([1, 1, 1, 1])
+        filt = _get_filter(filt_size) * (stride ** 2)
+        self.register_buffer("filt", filt[None, None, :, :].repeat(channels, 1, 1, 1))
+        self.conv_pad = 1 + pad_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.conv_transpose2d(
+            self.pad(x), self.filt,
+            stride=self.stride, padding=self.conv_pad, groups=x.shape[1],
+        )
+        if self.filt_odd:
+            return out[:, :, 1:, 1:]
+        return out
+
+
 class _ResBlock(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
@@ -35,35 +107,39 @@ class _ResBlock(nn.Module):
 # ---------------------------------------------------------------------------
 
 class ResnetGenerator(nn.Module):
-    """ResNet-based generator for unpaired image-to-image translation.
+    """ResNet-based generator with anti-aliased down/upsampling.
 
     All layers are stored in a single flat ``nn.ModuleList`` so that any layer
     can be addressed by a global index, matching the original CUT paper's
     ``nce_layers`` convention (default ``[0, 4, 8, 12, 16]``).
 
     Layer index map (n_blocks=9, ngf=64):
-        0  ReflectionPad2d(3)
-        1  Conv2d(in_ch → ngf, 7×7)
-        2  InstanceNorm2d
-        3  ReLU
-        4  Conv2d(ngf → ngf×2, stride=2)
-        5  InstanceNorm2d
-        6  ReLU
-        7  Conv2d(ngf×2 → ngf×4, stride=2)
-        8  InstanceNorm2d
-        9  ReLU
-        10 ResBlock #1  ┐
-        …               │ n_blocks entries
-        18 ResBlock #9  ┘
-        19 ConvTranspose2d(ngf×4 → ngf×2)
-        20 InstanceNorm2d
-        21 ReLU
-        22 ConvTranspose2d(ngf×2 → ngf)
-        23 InstanceNorm2d
-        24 ReLU
-        25 ReflectionPad2d(3)
-        26 Conv2d(ngf → out_ch, 7×7)
-        27 Tanh
+         0  ReflectionPad2d(3)
+         1  Conv2d(in_ch → ngf, 7×7)
+         2  InstanceNorm2d
+         3  ReLU
+         4  Conv2d(ngf → ngf×2, 3×3, stride=1, pad=1)
+         5  Downsample(ngf×2)
+         6  InstanceNorm2d
+         7  ReLU
+         8  Conv2d(ngf×2 → ngf×4, 3×3, stride=1, pad=1)
+         9  Downsample(ngf×4)
+        10  InstanceNorm2d
+        11  ReLU
+        12  ResBlock #1  ┐
+        …                │ n_blocks entries
+        20  ResBlock #9  ┘
+        21  Upsample(ngf×4)
+        22  Conv2d(ngf×4 → ngf×2, 3×3, stride=1, pad=1)
+        23  InstanceNorm2d
+        24  ReLU
+        25  Upsample(ngf×2)
+        26  Conv2d(ngf×2 → ngf, 3×3, stride=1, pad=1)
+        27  InstanceNorm2d
+        28  ReLU
+        29  ReflectionPad2d(3)
+        30  Conv2d(ngf → out_ch, 7×7)
+        31  Tanh
     """
 
     def __init__(self, in_channels: int = 1, out_channels: int = 1,
@@ -79,7 +155,8 @@ class ResnetGenerator(nn.Module):
         c = ngf
         for _ in range(2):
             layers += [
-                nn.Conv2d(c, c * 2, 3, stride=2, padding=1),
+                nn.Conv2d(c, c * 2, 3, stride=1, padding=1),
+                Downsample(c * 2),
                 _norm(c * 2),
                 nn.ReLU(inplace=True),
             ]
@@ -88,8 +165,8 @@ class ResnetGenerator(nn.Module):
             layers.append(_ResBlock(c))
         for _ in range(2):
             layers += [
-                nn.ConvTranspose2d(c, c // 2, 3, stride=2, padding=1,
-                                   output_padding=1),
+                Upsample(c),
+                nn.Conv2d(c, c // 2, 3, stride=1, padding=1),
                 _norm(c // 2),
                 nn.ReLU(inplace=True),
             ]
@@ -124,27 +201,28 @@ class ResnetGenerator(nn.Module):
 # ---------------------------------------------------------------------------
 
 class PatchGANDiscriminator(nn.Module):
-    """70×70 PatchGAN discriminator (5 conv layers, stride-2 downsampling).
+    """PatchGAN discriminator with anti-aliased downsampling.
 
-    Output is a 32×32 real/fake map; each unit has a ~70-pixel receptive field.
-    Uses LeakyReLU(0.2) and InstanceNorm (skipped on first layer).
+    Uses ``Conv(4×4, stride=1) → Downsample`` instead of ``Conv(stride=2)``
+    to match the original CUT repo.  LeakyReLU(0.2), InstanceNorm (skipped
+    on first layer).
     """
 
     def __init__(self, in_channels: int = 1, ndf: int = 64):
         super().__init__()
         layers: list[nn.Module] = [
-            nn.Conv2d(in_channels, ndf, 4, stride=2, padding=1),
+            nn.Conv2d(in_channels, ndf, 4, stride=1, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
+            Downsample(ndf),
         ]
         c = ndf
         for i in range(1, 4):
             c_next = min(c * 2, ndf * 8)
-            stride = 2 if i < 3 else 1
-            layers += [
-                nn.Conv2d(c, c_next, 4, stride=stride, padding=1),
-                _norm(c_next),
-                nn.LeakyReLU(0.2, inplace=True),
-            ]
+            layers.append(nn.Conv2d(c, c_next, 4, stride=1, padding=1))
+            layers.append(_norm(c_next))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            if i < 3:  # downsample for first 2 intermediate blocks
+                layers.append(Downsample(c_next))
             c = c_next
         layers.append(nn.Conv2d(c, 1, 4, stride=1, padding=1))
         self.net = nn.Sequential(*layers)
