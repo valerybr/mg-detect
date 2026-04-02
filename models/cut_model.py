@@ -122,8 +122,8 @@ class CUTModel(nn.Module):
         Flat generator layout with anti-aliased sampling (see ResnetGenerator):
           0           ReflectionPad2d                   → in_channels
           1-3         Conv(7×7)/Norm/ReLU               → ngf
-          4-7         Conv(s=1)/Downsample/Norm/ReLU    → ngf×2
-          8-11        Conv(s=1)/Downsample/Norm/ReLU    → ngf×4
+          4-7         Conv(s=1)/Norm/ReLU/Downsample    → ngf×2
+          8-11        Conv(s=1)/Norm/ReLU/Downsample    → ngf×4
           12..11+n    ResBlock ×n_blocks                → ngf×4
           ...         decoder layers
         """

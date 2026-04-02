@@ -79,10 +79,10 @@ class Upsample(nn.Module):
         out = F.conv_transpose2d(
             self.pad(x), self.filt,
             stride=self.stride, padding=self.conv_pad, groups=x.shape[1],
-        )
+        )[:, :, 1:, 1:]
         if self.filt_odd:
-            return out[:, :, 1:, 1:]
-        return out
+            return out
+        return out[:, :, :-1, :-1]
 
 
 class _ResBlock(nn.Module):
@@ -119,13 +119,13 @@ class ResnetGenerator(nn.Module):
          2  InstanceNorm2d
          3  ReLU
          4  Conv2d(ngf → ngf×2, 3×3, stride=1, pad=1)
-         5  Downsample(ngf×2)
-         6  InstanceNorm2d
-         7  ReLU
+         5  InstanceNorm2d
+         6  ReLU
+         7  Downsample(ngf×2)
          8  Conv2d(ngf×2 → ngf×4, 3×3, stride=1, pad=1)
-         9  Downsample(ngf×4)
-        10  InstanceNorm2d
-        11  ReLU
+         9  InstanceNorm2d
+        10  ReLU
+        11  Downsample(ngf×4)
         12  ResBlock #1  ┐
         …                │ n_blocks entries
         20  ResBlock #9  ┘
@@ -156,9 +156,9 @@ class ResnetGenerator(nn.Module):
         for _ in range(2):
             layers += [
                 nn.Conv2d(c, c * 2, 3, stride=1, padding=1),
-                Downsample(c * 2),
                 _norm(c * 2),
                 nn.ReLU(inplace=True),
+                Downsample(c * 2),
             ]
             c *= 2
         for _ in range(n_blocks):
