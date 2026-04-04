@@ -1,6 +1,7 @@
 """Bilateral mammography dataset: paired left/right CC views, no-finding studies."""
 
 import csv
+import random
 from pathlib import Path
 
 import cv2
@@ -130,5 +131,120 @@ class BilateralDataset(Dataset):
         if flip:
             img = cv2.flip(img, 1)
         # [0, 255] uint8 → [-1, 1] float32, shape [1, H, W]
+        tensor = torch.from_numpy(img.astype(np.float32)) / 127.5 - 1.0
+        return tensor.unsqueeze(0)
+
+
+class UnpairedBilateralDataset(Dataset):
+    """Unpaired left/right CC mammogram dataset for CUT/CycleGAN training.
+
+    Builds separate pools of left and right CC images from no-finding studies.
+    Each ``__getitem__`` returns a randomly sampled right image independently of
+    the left image at that index, so the model sees every L×R combination over
+    training rather than fixed pairs.
+
+    The dataset length is ``len(left_images)``.  Right images are sampled
+    uniformly at random, which matches the unpaired assumption of CUT/CycleGAN.
+
+    Args:
+        data_root:       Root directory containing converted PNG images.
+        annotations_csv: Path to ``finding_annotations.csv``.
+        split:           ``'training'``, ``'test'``, or ``None`` for all rows.
+        img_size:        Side length to resize images to (default 512).
+        flip_right:      Flip right-breast images horizontally so the nipple
+                         faces left, matching the left-breast orientation.
+    """
+
+    def __init__(
+        self,
+        data_root: str,
+        annotations_csv: str,
+        split: str | None = None,
+        img_size: int = 512,
+        flip_right: bool = False,
+    ):
+        self.data_root = Path(data_root)
+        self.img_size = img_size
+        self.flip_right = flip_right
+
+        self.left_images, self.right_images = self._build_pools(
+            Path(annotations_csv), split
+        )
+
+    def _build_pools(
+        self, annotations_csv: Path, split: str | None
+    ) -> tuple[list[Path], list[Path]]:
+        studies: dict[str, dict[tuple[str, str], str]] = {}
+        findings: dict[str, set[str]] = {}
+
+        with open(annotations_csv, newline="") as f:
+            for row in csv.DictReader(f):
+                if split is not None and row["split"] != split:
+                    continue
+                sid = row["study_id"]
+                findings.setdefault(sid, set()).add(row["finding_categories"])
+                key = (row["laterality"], row["view_position"])
+                studies.setdefault(sid, {})[key] = row["image_id"]
+
+        left_images: list[Path] = []
+        right_images: list[Path] = []
+        skipped: list[tuple[str, str]] = []
+
+        for sid, images in studies.items():
+            if findings[sid] != {"['No Finding']"}:
+                continue
+
+            l_id = images.get(("L", "CC"))
+            r_id = images.get(("R", "CC"))
+
+            if l_id is None and r_id is None:
+                skipped.append((sid, "missing both L CC and R CC"))
+                continue
+
+            if l_id is not None:
+                l_path = self.data_root / sid / f"{l_id}.png"
+                if l_path.exists():
+                    left_images.append(l_path)
+                else:
+                    skipped.append((sid, f"PNG not found: {l_path}"))
+
+            if r_id is not None:
+                r_path = self.data_root / sid / f"{r_id}.png"
+                if r_path.exists():
+                    right_images.append(r_path)
+                else:
+                    skipped.append((sid, f"PNG not found: {r_path}"))
+
+        if skipped:
+            print(f"[UnpairedBilateralDataset] Skipped {len(skipped)} entries:")
+            for sid, reason in skipped:
+                print(f"  {sid}: {reason}")
+
+        print(
+            f"[UnpairedBilateralDataset] {len(left_images)} left, "
+            f"{len(right_images)} right images"
+            + (f" (split={split})" if split else "")
+        )
+        return left_images, right_images
+
+    def __len__(self) -> int:
+        return len(self.left_images)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        l_path = self.left_images[idx]
+        r_path = random.choice(self.right_images)
+        img_l = self._load(l_path, flip=False)
+        img_r = self._load(r_path, flip=self.flip_right)
+        return img_l, img_r
+
+    def _load(self, path: Path, flip: bool) -> torch.Tensor:
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise FileNotFoundError(f"Cannot read image: {path}")
+        if img.shape[0] != self.img_size or img.shape[1] != self.img_size:
+            img = cv2.resize(img, (self.img_size, self.img_size),
+                             interpolation=cv2.INTER_LINEAR)
+        if flip:
+            img = cv2.flip(img, 1)
         tensor = torch.from_numpy(img.astype(np.float32)) / 127.5 - 1.0
         return tensor.unsqueeze(0)

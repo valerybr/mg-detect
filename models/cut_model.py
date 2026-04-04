@@ -198,8 +198,8 @@ class CUTModel(nn.Module):
         the correct query for the NCE objective, not a second full G pass.
         """
         B = src.shape[0]
-        _, feats_src = self.G.forward_with_features(src, self.nce_layers)
-        _, feats_tgt = self.G.forward_with_features(tgt, self.nce_layers)
+        _, feats_src = self.G.forward_with_features(src, self.nce_layers) # type: ignore
+        _, feats_tgt = self.G.forward_with_features(tgt, self.nce_layers) # type: ignore
 
         sampled_src, patch_ids = self._sample_patches(feats_src, self.num_patches)
         sampled_tgt: list[torch.Tensor] = []

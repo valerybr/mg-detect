@@ -49,12 +49,12 @@ class Downsample(nn.Module):
         super().__init__()
         self.stride = stride
         pad_size = (filt_size - 1) // 2
-        self.pad = nn.ReflectionPad2d([pad_size] * 4)
+        self.pad = nn.ReflectionPad2d([pad_size] * 4) # type: ignore
         filt = _get_filter(filt_size)
         self.register_buffer("filt", filt[None, None, :, :].repeat(channels, 1, 1, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.conv2d(self.pad(x), self.filt, stride=self.stride, groups=x.shape[1])
+        return F.conv2d(self.pad(x), self.filt, stride=self.stride, groups=x.shape[1]) # type: ignore 
 
 
 class Upsample(nn.Module):
@@ -70,14 +70,14 @@ class Upsample(nn.Module):
         self.stride = stride
         self.filt_odd = filt_size % 2 == 1
         pad_size = (filt_size - 1) // 2
-        self.pad = nn.ReplicationPad2d([1, 1, 1, 1])
+        self.pad = nn.ReplicationPad2d([1, 1, 1, 1]) #type: ignore
         filt = _get_filter(filt_size) * (stride ** 2)
         self.register_buffer("filt", filt[None, None, :, :].repeat(channels, 1, 1, 1))
         self.conv_pad = 1 + pad_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = F.conv_transpose2d(
-            self.pad(x), self.filt,
+            self.pad(x), self.filt, #type: ignore - defined using register_buffer
             stride=self.stride, padding=self.conv_pad, groups=x.shape[1],
         )[:, :, 1:, 1:]
         if self.filt_odd:
