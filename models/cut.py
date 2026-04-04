@@ -56,6 +56,12 @@ class PatchNCELoss(nn.Module):
             scalar NCE loss (mean over all samples)
         """
         feat_k = feat_k.detach()
+
+        # Force float32 for numerical stability under AMP.
+        # The bmm + division by temperature (0.07 → ×14.3) can overflow float16.
+        feat_q = feat_q.float()
+        feat_k = feat_k.float()
+
         dim = feat_q.shape[1]
         N = feat_q.shape[0]          # B * n
         n = N // batch_size           # patches per image
@@ -237,12 +243,8 @@ class CycleCUTModel(nn.Module):
         self.real_B = real_B.to(self.device)
 
     def forward(self):
-        self.fake_B, self.feats_A = self.G_AB.forward_with_features(
-            self.real_A, self.nce_layers
-        )
-        self.fake_A, self.feats_B = self.G_BA.forward_with_features(
-            self.real_B, self.nce_layers
-        )
+        self.fake_B, self.feats_A = self.G_AB(self.real_A, self.nce_layers)
+        self.fake_A, self.feats_B = self.G_BA(self.real_B, self.nce_layers)
         self.rec_A = self.G_BA(self.fake_B)
         self.rec_B = self.G_AB(self.fake_A)
         self.idt_A = self.G_BA(self.real_A)   # G_BA(A) ≈ A
@@ -264,8 +266,8 @@ class CycleCUTModel(nn.Module):
         src : source image (real)
         tgt : generated image (fake, translated from src)
         """
-        _, feats_src = G.forward_with_features(src, self.nce_layers)
-        _, feats_tgt = G.forward_with_features(tgt, self.nce_layers)
+        _, feats_src = G(src, self.nce_layers)
+        _, feats_tgt = G(tgt, self.nce_layers)
 
         # Sample the same spatial positions in src and tgt per layer so that
         # query (tgt) and key (src) are spatially aligned.

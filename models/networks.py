@@ -179,15 +179,20 @@ class ResnetGenerator(nn.Module):
 
         self.model = nn.ModuleList(layers)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.model:
-            x = layer(x)
-        return x
+    def forward(
+        self, x: torch.Tensor, nce_layers: list[int] | None = None
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
+        """Forward pass, optionally collecting intermediate features.
 
-    def forward_with_features(
-        self, x: torch.Tensor, nce_layers: list[int]
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        """Full forward pass; collect intermediate outputs at ``nce_layers`` indices."""
+        Args:
+            x: input tensor
+            nce_layers: if provided, return (output, [feats]) instead of output
+        """
+        if nce_layers is None:
+            for layer in self.model:
+                x = layer(x)
+            return x
+
         feats: list[torch.Tensor] = []
         for i, layer in enumerate(self.model):
             x = layer(x)
