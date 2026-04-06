@@ -12,7 +12,7 @@ from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import  autocast
 
 from .networks import ResnetGenerator, PatchGANDiscriminator, PatchMLP, init_weights
-from .cut import LSGANLoss, PatchNCELoss
+from .loss import LSGANLoss, PatchNCELoss
 
 
 class CUTModel(nn.Module):
