@@ -232,6 +232,8 @@ class CUTModel(nn.Module):
                 + self.crit_gan(self.D_B(self.fake_B.detach()), False)
             )
         self.scaler_D.scale(loss_D_B).backward()
+        self.scaler_D.unscale_(self.opt_D)
+        nn.utils.clip_grad_norm_(self.D_B.parameters(), max_norm=1.0)
         self.scaler_D.step(self.opt_D)
         self.scaler_D.update()
         return loss_D_B.item()
@@ -264,6 +266,10 @@ class CUTModel(nn.Module):
             loss_G = loss_adv + loss_nce_both
 
         self.scaler_G.scale(loss_G).backward()
+        self.scaler_G.unscale_(self.opt_G)
+        self.scaler_G.unscale_(self.opt_F)
+        nn.utils.clip_grad_norm_(self.G.parameters(), max_norm=1.0)
+        nn.utils.clip_grad_norm_(self.mlps.parameters(), max_norm=1.0)
         self.scaler_G.step(self.opt_G)
         self.scaler_G.step(self.opt_F)
         self.scaler_G.update()
