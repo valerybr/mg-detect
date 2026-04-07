@@ -257,4 +257,5 @@ class PatchMLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [N, C]
         x = self.net(x)
-        return F.normalize(x, dim=1)
+        # Float32 before normalize: FP16 L2 norm can underflow → NaN
+        return F.normalize(x.float(), dim=1)
