@@ -310,6 +310,9 @@ class CUTModel(nn.Module):
                 "opt_F":    self.opt_F.state_dict(),
                 "scaler_G": self.scaler_G.state_dict(),
                 "scaler_D": self.scaler_D.state_dict(),
+                "sched_G":  self.sched_G.state_dict(),
+                "sched_D":  self.sched_D.state_dict(),
+                "sched_F":  self.sched_F.state_dict(),
             },
             path,
         )
@@ -328,4 +331,13 @@ class CUTModel(nn.Module):
             self.scaler_G.load_state_dict(ckpt["scaler_G"])
         if "scaler_D" in ckpt:
             self.scaler_D.load_state_dict(ckpt["scaler_D"])
+        if "sched_G" in ckpt:
+            self.sched_G.load_state_dict(ckpt["sched_G"])
+            self.sched_D.load_state_dict(ckpt["sched_D"])
+            self.sched_F.load_state_dict(ckpt["sched_F"])
+        else:
+            for _ in range(ckpt["epoch"]):
+                self.sched_G.step()
+                self.sched_D.step()
+                self.sched_F.step()
         return ckpt["epoch"]

@@ -1,0 +1,36 @@
+data:
+  root: ""                   # required: {study_id}/{image_id}.png layout
+  annotations: ""            # required: path to finding_annotations.csv
+  split: "training"
+  img_size: 512
+  flip_right: false          # images were already flipped during DICOM conversion
+
+model:
+  ngf: 64
+  ndf: 128                   # stronger discriminator for bilateral translation
+  n_blocks: 9
+  nce_layers: [4, 8, 12, 16] # layer 0 dropped: grayscale input gives NCE almost no signal
+  num_patches: 256
+  temperature: 0.07
+
+train:
+  batch_size: 1
+  num_workers: 2
+  n_epochs: 46               # constant-LR phase (plateau reached by epoch ~40)
+  n_epochs_decay: 54         # linear-decay phase → ends at epoch 100
+  lr: 2e-4
+  beta1: 0.5
+  lambda_nce: 1.0
+  lambda_idt: 1.0
+  use_amp: false
+  save_ckpt_every: 2
+  save_images_every: 5
+  resume: ""                 # path to checkpoint; empty = train from scratch
+
+output:
+  dir: ""                    # required: directory for checkpoints and sample images
+
+wandb:
+  enabled: true
+  project: "mg-detect-cut-bilateral"
+  run_name: ""               # defaults to basename of output.dir
