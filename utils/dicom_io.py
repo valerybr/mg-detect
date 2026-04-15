@@ -16,15 +16,15 @@ def _resize_with_pad(img: np.ndarray, size: int) -> np.ndarray:
     return canvas
 
 
-def _crop_breast(img: np.ndarray) -> np.ndarray:
-    """Remove background and crop to the breast bounding box."""
-    _, thresh = cv2.threshold(img, 10, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return img
-    largest = max(contours, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(largest)
-    return img[y : y + h, x : x + w]
+# def _crop_breast(img: np.ndarray) -> np.ndarray:
+#     """Remove background and crop to the breast bounding box."""
+#     _, thresh = cv2.threshold(img, 10, 255, cv2.THRESH_BINARY)
+#     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#     if not contours:
+#         return img
+#     largest = max(contours, key=cv2.contourArea)
+#     x, y, w, h = cv2.boundingRect(largest)
+#     return img[y : y + h, x : x + w]
 
 
 def count_up_continuing_ones(b_arr):

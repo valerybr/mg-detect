@@ -2,7 +2,7 @@ data:
   root: ""                   # required: {study_id}/{image_id}.png layout
   annotations: ""            # required: path to finding_annotations.csv
   split: "training"
-  img_size: 512
+  img_size: [512, 384]
   flip_right: false          # images were already flipped during DICOM conversion
 
 model:

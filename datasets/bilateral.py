@@ -25,7 +25,9 @@ class BilateralDataset(Dataset):
         data_root:       Root directory containing converted PNG images.
         annotations_csv: Path to ``finding_annotations.csv``.
         split:           ``'training'``, ``'test'``, or ``None`` for all rows.
-        img_size:        Side length to resize images to (default 512).
+        img_size:        Output image size. Either a single int for a square
+                         (e.g. ``512``) or a ``(height, width)`` tuple
+                         (e.g. ``(512, 384)``). Default ``512``.
         flip_right:      Flip right-breast images horizontally so the nipple
                          faces left, matching the left-breast orientation.
                          Set to ``False`` if images were already flipped during
@@ -37,11 +39,13 @@ class BilateralDataset(Dataset):
         data_root: str,
         annotations_csv: str,
         split: str | None = None,
-        img_size: int = 512,
+        img_size: int | tuple[int, int] = 512,
         flip_right: bool = False,
     ):
         self.data_root = Path(data_root)
-        self.img_size = img_size
+        self.img_size: tuple[int, int] = (
+            (img_size, img_size) if isinstance(img_size, int) else tuple(img_size)  # type: ignore[arg-type]
+        )
         self.flip_right = flip_right
 
         self.pairs = self._build_pairs(Path(annotations_csv), split)
@@ -125,8 +129,9 @@ class BilateralDataset(Dataset):
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if img is None:
             raise FileNotFoundError(f"Cannot read image: {path}")
-        if img.shape[0] != self.img_size or img.shape[1] != self.img_size:
-            img = cv2.resize(img, (self.img_size, self.img_size),
+        target_h, target_w = self.img_size
+        if img.shape[0] != target_h or img.shape[1] != target_w:
+            img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
                              interpolation=cv2.INTER_LINEAR)
         if flip:
             img = cv2.flip(img, 1)
@@ -150,7 +155,9 @@ class UnpairedBilateralDataset(Dataset):
         data_root:       Root directory containing converted PNG images.
         annotations_csv: Path to ``finding_annotations.csv``.
         split:           ``'training'``, ``'test'``, or ``None`` for all rows.
-        img_size:        Side length to resize images to (default 512).
+        img_size:        Output image size. Either a single int for a square
+                         (e.g. ``512``) or a ``(height, width)`` tuple
+                         (e.g. ``(512, 384)``). Default ``512``.
         flip_right:      Flip right-breast images horizontally so the nipple
                          faces left, matching the left-breast orientation.
     """
@@ -160,11 +167,13 @@ class UnpairedBilateralDataset(Dataset):
         data_root: str,
         annotations_csv: str,
         split: str | None = None,
-        img_size: int = 512,
+        img_size: int | tuple[int, int] = 512,
         flip_right: bool = False,
     ):
         self.data_root = Path(data_root)
-        self.img_size = img_size
+        self.img_size: tuple[int, int] = (
+            (img_size, img_size) if isinstance(img_size, int) else tuple(img_size)  # type: ignore[arg-type]
+        )
         self.flip_right = flip_right
 
         self.left_images, self.right_images = self._build_pools(
@@ -241,8 +250,9 @@ class UnpairedBilateralDataset(Dataset):
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if img is None:
             raise FileNotFoundError(f"Cannot read image: {path}")
-        if img.shape[0] != self.img_size or img.shape[1] != self.img_size:
-            img = cv2.resize(img, (self.img_size, self.img_size),
+        target_h, target_w = self.img_size
+        if img.shape[0] != target_h or img.shape[1] != target_w:
+            img = cv2.resize(img, (target_w, target_h),  # cv2 takes (width, height)
                              interpolation=cv2.INTER_LINEAR)
         if flip:
             img = cv2.flip(img, 1)
