@@ -5,11 +5,11 @@ identity PatchNCE loss. No cycle consistency, no second generator.
 """
 
 import itertools
+import warnings
 
 import torch
 import torch.nn as nn
-from torch.amp.grad_scaler import GradScaler
-from torch.amp.autocast_mode import  autocast
+from torch.amp.autocast_mode import autocast
 
 from .networks import ResnetGenerator, PatchGANDiscriminator, PatchMLP, init_weights
 from .loss import LSGANLoss, PatchNCELoss
@@ -26,8 +26,9 @@ class CUTModel(nn.Module):
 
     No cycle consistency loss, no second generator.
 
-    AMP (mixed precision) is managed internally: GradScalers and autocast
-    contexts live here so the training loop can just call optimize().
+    AMP (bfloat16 mixed precision) is managed internally via autocast
+    contexts so the training loop can just call optimize().
+    Falls back to float32 on GPUs without bfloat16 support.
 
     Args:
         device        : torch device
@@ -74,7 +75,11 @@ class CUTModel(nn.Module):
         self.lambda_idt = lambda_idt
         self.n_epochs = n_epochs
         self.n_epochs_decay = n_epochs_decay
-        self.use_amp = use_amp and device.type == "cuda"
+        if use_amp and device.type == "cuda" and not torch.cuda.is_bf16_supported():
+            warnings.warn(
+                "use_amp=True but GPU does not support bfloat16 — disabling AMP"
+            )
+        self.use_amp = use_amp and device.type == "cuda" and torch.cuda.is_bf16_supported()
 
         # ----- networks -----
         self.G : nn.Module = init_weights(ResnetGenerator(
@@ -107,10 +112,6 @@ class CUTModel(nn.Module):
         self.sched_G = torch.optim.lr_scheduler.LambdaLR(self.opt_G, _lr_lambda)
         self.sched_D = torch.optim.lr_scheduler.LambdaLR(self.opt_D, _lr_lambda)
         self.sched_F = torch.optim.lr_scheduler.LambdaLR(self.opt_F, _lr_lambda)
-
-        # ----- AMP scalers -----
-        self.scaler_G = GradScaler("cuda", enabled=self.use_amp)
-        self.scaler_D = GradScaler("cuda", enabled=self.use_amp)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -173,7 +174,7 @@ class CUTModel(nn.Module):
         self.real_B = real_B.to(self.device)
 
     def forward(self):
-        with autocast("cuda", enabled=self.use_amp):
+        with autocast("cuda", dtype=torch.bfloat16, enabled=self.use_amp):
             self.fake_B = self.G(self.real_A)
             if self.lambda_idt > 0.0:
                 self.idt_B = self.G(self.real_B)
@@ -226,16 +227,14 @@ class CUTModel(nn.Module):
             p.requires_grad_(True)
         self.opt_D.zero_grad()
 
-        with autocast("cuda", enabled=self.use_amp):
+        with autocast("cuda", dtype=torch.bfloat16, enabled=self.use_amp):
             loss_D_B = 0.5 * (
                 self.crit_gan(self.D_B(self.real_B), True)
                 + self.crit_gan(self.D_B(self.fake_B.detach()), False)
             )
-        self.scaler_D.scale(loss_D_B).backward()
-        self.scaler_D.unscale_(self.opt_D)
+        loss_D_B.backward()
         nn.utils.clip_grad_norm_(self.D_B.parameters(), max_norm=1.0)
-        self.scaler_D.step(self.opt_D)
-        self.scaler_D.update()
+        self.opt_D.step()
         return loss_D_B.item()
 
     # ------------------------------------------------------------------
@@ -248,7 +247,7 @@ class CUTModel(nn.Module):
         self.opt_G.zero_grad()
         self.opt_F.zero_grad()
 
-        with autocast("cuda", enabled=self.use_amp):
+        with autocast("cuda", dtype=torch.bfloat16, enabled=self.use_amp):
             loss_adv = self.crit_gan(self.D_B(self.fake_B), True)
 
             # fake_B still has its computation graph; re-encoding through G's
@@ -265,14 +264,11 @@ class CUTModel(nn.Module):
 
             loss_G = loss_adv + loss_nce_both
 
-        self.scaler_G.scale(loss_G).backward()
-        self.scaler_G.unscale_(self.opt_G)
-        self.scaler_G.unscale_(self.opt_F)
+        loss_G.backward()
         nn.utils.clip_grad_norm_(self.G.parameters(), max_norm=1.0)
         nn.utils.clip_grad_norm_(self.mlps.parameters(), max_norm=1.0)
-        self.scaler_G.step(self.opt_G)
-        self.scaler_G.step(self.opt_F)
-        self.scaler_G.update()
+        self.opt_G.step()
+        self.opt_F.step()
 
         return {
             "adv": loss_adv.item(),
@@ -308,8 +304,6 @@ class CUTModel(nn.Module):
                 "opt_G":    self.opt_G.state_dict(),
                 "opt_D":    self.opt_D.state_dict(),
                 "opt_F":    self.opt_F.state_dict(),
-                "scaler_G": self.scaler_G.state_dict(),
-                "scaler_D": self.scaler_D.state_dict(),
                 "sched_G":  self.sched_G.state_dict(),
                 "sched_D":  self.sched_D.state_dict(),
                 "sched_F":  self.sched_F.state_dict(),
@@ -327,10 +321,6 @@ class CUTModel(nn.Module):
         self.opt_D.load_state_dict(ckpt["opt_D"])
         if "opt_F" in ckpt:
             self.opt_F.load_state_dict(ckpt["opt_F"])
-        if "scaler_G" in ckpt:
-            self.scaler_G.load_state_dict(ckpt["scaler_G"])
-        if "scaler_D" in ckpt:
-            self.scaler_D.load_state_dict(ckpt["scaler_D"])
         if "sched_G" in ckpt:
             self.sched_G.load_state_dict(ckpt["sched_G"])
             self.sched_D.load_state_dict(ckpt["sched_D"])

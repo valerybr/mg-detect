@@ -22,7 +22,7 @@ train:
   beta1: 0.5
   lambda_nce: 1.0
   lambda_idt: 1.0
-  use_amp: false
+  use_amp: true
   save_ckpt_every: 2
   save_images_every: 5
   resume: ""                 # path to checkpoint; empty = train from scratch

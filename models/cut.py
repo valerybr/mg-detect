@@ -1,11 +1,11 @@
 """CycleCUT model: forward pass, optimizer step, and checkpointing."""
 
 import itertools
+import warnings
 from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
 
 from .loss import LSGANLoss, PatchNCELoss
@@ -65,7 +65,11 @@ class CycleCUTModel(nn.Module):
         self.lambda_idt = lambda_idt
         self.n_epochs = n_epochs
         self.n_epochs_decay = n_epochs_decay
-        self.use_amp = use_amp and device.type == "cuda"
+        if use_amp and device.type == "cuda" and not torch.cuda.is_bf16_supported():
+            warnings.warn(
+                "use_amp=True but GPU does not support bfloat16 — disabling AMP"
+            )
+        self.use_amp = use_amp and device.type == "cuda" and torch.cuda.is_bf16_supported()
 
         # ----- networks -----
         self.G_AB = init_weights(ResnetGenerator(
@@ -122,10 +126,6 @@ class CycleCUTModel(nn.Module):
         self.sched_G = torch.optim.lr_scheduler.LambdaLR(self.opt_G, _lr_lambda)
         self.sched_D = torch.optim.lr_scheduler.LambdaLR(self.opt_D, _lr_lambda)
         self.sched_F = torch.optim.lr_scheduler.LambdaLR(self.opt_F, _lr_lambda)
-
-        # ----- AMP scalers -----
-        self.scaler_G = GradScaler("cuda", enabled=self.use_amp)
-        self.scaler_D = GradScaler("cuda", enabled=self.use_amp)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -188,7 +188,7 @@ class CycleCUTModel(nn.Module):
         self.real_B = real_B.to(self.device)
 
     def forward(self):
-        with autocast("cuda", enabled=self.use_amp):
+        with autocast("cuda", dtype=torch.bfloat16, enabled=self.use_amp):
             self.fake_B, self.feats_A = self.G_AB(self.real_A, self.nce_layers)
             self.fake_A, self.feats_B = self.G_BA(self.real_B, self.nce_layers)
             self.rec_A = self.G_BA(self.fake_B)
@@ -244,7 +244,7 @@ class CycleCUTModel(nn.Module):
 
         self.opt_D.zero_grad()
 
-        with autocast("cuda", enabled=self.use_amp):
+        with autocast("cuda", dtype=torch.bfloat16, enabled=self.use_amp):
             loss_D_A = (
                 self.crit_gan(self.D_A(self.real_A), True)
                 + self.crit_gan(self.D_A(self.fake_A.detach()), False)
@@ -255,9 +255,8 @@ class CycleCUTModel(nn.Module):
                 + self.crit_gan(self.D_B(self.fake_B.detach()), False)
             ) * 0.5
 
-        self.scaler_D.scale(loss_D_A + loss_D_B).backward()
-        self.scaler_D.step(self.opt_D)
-        self.scaler_D.update()
+        (loss_D_A + loss_D_B).backward()
+        self.opt_D.step()
         return loss_D_A.item(), loss_D_B.item()
 
     # ------------------------------------------------------------------
@@ -271,7 +270,7 @@ class CycleCUTModel(nn.Module):
         self.opt_G.zero_grad()
         self.opt_F.zero_grad()
 
-        with autocast("cuda", enabled=self.use_amp):
+        with autocast("cuda", dtype=torch.bfloat16, enabled=self.use_amp):
             # Adversarial
             loss_adv = (
                 self.crit_gan(self.D_B(self.fake_B), True)
@@ -298,10 +297,9 @@ class CycleCUTModel(nn.Module):
 
             loss_G = loss_adv + loss_nce + loss_cyc + loss_idt
 
-        self.scaler_G.scale(loss_G).backward()
-        self.scaler_G.step(self.opt_G)
-        self.scaler_G.step(self.opt_F)
-        self.scaler_G.update()
+        loss_G.backward()
+        self.opt_G.step()
+        self.opt_F.step()
 
         return {
             "adv": loss_adv.item(),
@@ -348,8 +346,6 @@ class CycleCUTModel(nn.Module):
                 "opt_G": self.opt_G.state_dict(),
                 "opt_D": self.opt_D.state_dict(),
                 "opt_F":    self.opt_F.state_dict(),
-                "scaler_G": self.scaler_G.state_dict(),
-                "scaler_D": self.scaler_D.state_dict(),
                 "sched_G":  self.sched_G.state_dict(),
                 "sched_D":  self.sched_D.state_dict(),
                 "sched_F":  self.sched_F.state_dict(),
@@ -370,10 +366,6 @@ class CycleCUTModel(nn.Module):
         self.opt_D.load_state_dict(ckpt["opt_D"])
         if "opt_F" in ckpt:
             self.opt_F.load_state_dict(ckpt["opt_F"])
-        if "scaler_G" in ckpt:
-            self.scaler_G.load_state_dict(ckpt["scaler_G"])
-        if "scaler_D" in ckpt:
-            self.scaler_D.load_state_dict(ckpt["scaler_D"])
         if "sched_G" in ckpt:
             self.sched_G.load_state_dict(ckpt["sched_G"])
             self.sched_D.load_state_dict(ckpt["sched_D"])
