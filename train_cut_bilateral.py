@@ -34,7 +34,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models.cut_model import CUTModel
-from datasets import BilateralDataset
+from datasets import ScheduledBilateralDataset
 
 _DEFAULTS = Path(__file__).parent / "configs" / "cut_bilateral.yaml"
 
@@ -64,6 +64,20 @@ def _validate(cfg: DictConfig):
     ]
     if missing:
         raise ValueError(f"Required config fields not set: {', '.join(missing)}")
+
+
+# ---------------------------------------------------------------------------
+# Curriculum schedule
+# ---------------------------------------------------------------------------
+
+def _p_for_epoch(schedule, epoch: int) -> float:
+    """Step schedule: list of (duration, p). Epochs past the end return 0.0."""
+    cum = 0
+    for dur, p in schedule:
+        cum += int(dur)
+        if epoch < cum:
+            return float(p)
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +253,15 @@ def train(cfg: DictConfig):
         print(f"VRAM  : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     # ----- dataset -----
-    dataset = BilateralDataset(
+    dataset = ScheduledBilateralDataset(
         data_root=cfg.data.root,
         annotations_csv=cfg.data.annotations,
         split=cfg.data.split,
         img_size=cfg.data.img_size,
         flip_right=cfg.data.flip_right,
+        seed=cfg.train.random_seed,
     )
+    schedule = [tuple(s) for s in cfg.train.random_schedule]
     loader = DataLoader(
         dataset,
         batch_size=cfg.train.batch_size,
@@ -310,7 +326,14 @@ def train(cfg: DictConfig):
         t0 = time.time()
         running = {k: 0.0 for k in ("D_B", "adv", "nce", "idt", "G")}
 
-        pbar = tqdm(loader, desc=f"Epoch {epoch + 1}/{total_epochs}", leave=False)
+        p_random = _p_for_epoch(schedule, epoch)
+        dataset.set_epoch_state(epoch, p_random)
+
+        pbar = tqdm(
+            loader,
+            desc=f"Epoch {epoch + 1}/{total_epochs} [p_rand={p_random:.2f}]",
+            leave=False,
+        )
         for real_A, real_B in pbar:
             model.set_input(real_A, real_B)
             losses = model.optimize()
@@ -347,6 +370,7 @@ def train(cfg: DictConfig):
                 {f"loss/{k}": v for k, v in avg.items()} | {
                     "epoch":         epoch + 1,
                     "lr":            model.sched_G.get_last_lr()[0],
+                    "p_random":      p_random,
                     "min_per_epoch": elapsed / 60,
                     "eta_hours":     remaining / 3600,
                 },

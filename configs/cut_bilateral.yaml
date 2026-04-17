@@ -26,6 +26,14 @@ train:
   save_ckpt_every: 2
   save_images_every: 5
   resume: ""                 # path to checkpoint; empty = train from scratch
+  # Curriculum for random-pair probability (duration_epochs, p).
+  # Epochs beyond the last segment use p=0 (fully paired).
+  random_schedule:
+    - [10, 0.5]
+    - [10, 0.3]
+    - [10, 0.1]
+    - [70, 0.0]
+  random_seed: 0             # base seed for ScheduledBilateralDataset sampling
 
 output:
   dir: ""                    # required: directory for checkpoints and sample images
