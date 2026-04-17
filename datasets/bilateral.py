@@ -370,7 +370,7 @@ class ScheduledBilateralDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         l_path, r_path = self.pairs[idx]
 
-        rng = random.Random((self.seed, self.epoch, idx))
+        rng = random.Random(f"{self.seed}:{self.epoch}:{idx}")
         if self.p > 0.0 and len(self.pairs) > 1 and rng.random() < self.p:
             j = rng.randrange(len(self.pairs) - 1)
             if j >= idx:
