@@ -1,0 +1,11 @@
+torch>=2.10.0
+torchvision>=0.25.0
+omegaconf>=2.3.0
+tqdm>=4.67.3
+opencv-python>=4.13.0.92
+numpy==2.0.2
+pydicom>=3.0.1
+matplotlib>=3.10.8
+wandb>=0.25.1
+Pillow>=11.3.0
+pandas>=3.0.0
