@@ -44,7 +44,9 @@ class CUTModel(nn.Module):
         beta1         : Adam β₁ (default 0.5)
         n_epochs      : epochs with constant LR (default 200)
         n_epochs_decay: epochs over which LR linearly decays to 0 (default 200)
-        use_amp       : enable mixed-precision training (default True)
+        use_amp       : enable bfloat16 mixed-precision training (default False;
+                        the original CUT recipe trains in fp32 and small datasets
+                        like horse2zebra are sensitive to bf16 precision loss)
     """
 
     def __init__(
@@ -63,7 +65,7 @@ class CUTModel(nn.Module):
         beta1: float = 0.5,
         n_epochs: int = 200,
         n_epochs_decay: int = 200,
-        use_amp: bool = True,
+        use_amp: bool = False,
     ):
         super().__init__()
         self.device = device
@@ -84,7 +86,7 @@ class CUTModel(nn.Module):
         # ----- networks -----
         self.G : nn.Module = init_weights(ResnetGenerator(
             in_channels=in_channels, out_channels=in_channels,
-            n_blocks=n_blocks,
+            ngf=ngf, n_blocks=n_blocks,
         )).to(device)
         self.D_B = init_weights(
             PatchGANDiscriminator(in_channels=in_channels, ndf=ndf)
@@ -174,10 +176,15 @@ class CUTModel(nn.Module):
         self.real_B = real_B.to(self.device)
 
     def forward(self):
+        # Run G with nce_layers so a single pass produces both the generated
+        # image and the encoder features for the source. Cached features are
+        # consumed in _update_G; their autograd graph must stay alive until
+        # loss_G.backward() runs (the intervening D update detaches fake_B,
+        # so G's graph is preserved).
         with autocast("cuda", dtype=torch.bfloat16, enabled=self.use_amp):
-            self.fake_B = self.G(self.real_A)
+            self.fake_B, self.feats_real_A = self.G(self.real_A, self.nce_layers)
             if self.lambda_idt > 0.0:
-                self.idt_B = self.G(self.real_B)
+                self.idt_B, self.feats_real_B = self.G(self.real_B, self.nce_layers)
 
     # ------------------------------------------------------------------
     # NCE loss
@@ -187,20 +194,24 @@ class CUTModel(nn.Module):
         self,
         src: torch.Tensor,
         tgt: torch.Tensor,
+        feats_src: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """Compute mean PatchNCE loss across nce_layers.
 
-        src : source image (real)
-        tgt : generated image (output of G applied to src)
+        src       : source image (real)
+        tgt       : generated image (output of G applied to src)
+        feats_src : optional precomputed encoder features for src — pass these
+                    when src has already been run through G (e.g. cached from
+                    forward()) to avoid a redundant encoder pass.
 
-        The encoder is run on both src and tgt at the same spatial patch
-        positions. Running G's encoder on tgt (which is itself G(src))
-        gives G's internal representation of the generated image — this is
-        the correct query for the NCE objective, not a second full G pass.
+        Running G's encoder on tgt (which is itself G(src)) gives G's internal
+        representation of the generated image — this is the correct query for
+        the NCE objective, not a second full G pass.
         """
         B = src.shape[0]
-        _, feats_src = self.G(src, self.nce_layers)
-        _, feats_tgt = self.G(tgt, self.nce_layers)
+        if feats_src is None:
+            feats_src = self.G(src, self.nce_layers, encode_only=True)
+        feats_tgt = self.G(tgt, self.nce_layers, encode_only=True)
 
         sampled_src, patch_ids = self._sample_patches(feats_src, self.num_patches)
         sampled_tgt: list[torch.Tensor] = []
@@ -233,7 +244,6 @@ class CUTModel(nn.Module):
                 + self.crit_gan(self.D_B(self.fake_B.detach()), False)
             )
         loss_D_B.backward()
-        nn.utils.clip_grad_norm_(self.D_B.parameters(), max_norm=1.0)
         self.opt_D.step()
         return loss_D_B.item()
 
@@ -252,11 +262,15 @@ class CUTModel(nn.Module):
 
             # fake_B still has its computation graph; re-encoding through G's
             # encoder here is intentional and must NOT be detached.
-            loss_nce = self._compute_nce_loss(self.real_A, self.fake_B) * self.lambda_nce
+            loss_nce = self._compute_nce_loss(
+                self.real_A, self.fake_B, feats_src=self.feats_real_A
+            ) * self.lambda_nce
 
             loss_idt = torch.tensor(0.0, device=self.device)
             if self.lambda_idt > 0.0:
-                loss_idt = self._compute_nce_loss(self.real_B, self.idt_B) * self.lambda_idt
+                loss_idt = self._compute_nce_loss(
+                    self.real_B, self.idt_B, feats_src=self.feats_real_B
+                ) * self.lambda_idt
                 # Average NCE + identity NCE (matches original CUT)
                 loss_nce_both = (loss_nce + loss_idt) * 0.5
             else:
@@ -265,8 +279,6 @@ class CUTModel(nn.Module):
             loss_G = loss_adv + loss_nce_both
 
         loss_G.backward()
-        nn.utils.clip_grad_norm_(self.G.parameters(), max_norm=1.0)
-        nn.utils.clip_grad_norm_(self.mlps.parameters(), max_norm=1.0)
         self.opt_G.step()
         self.opt_F.step()
 

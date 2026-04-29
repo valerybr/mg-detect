@@ -43,6 +43,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ndf", type=int, default=64)
     p.add_argument("--n-blocks", type=int, default=9)
     p.add_argument("--num-patches", type=int, default=256)
+    p.add_argument("--use-amp", action="store_true",
+                   help="Enable bf16 AMP. Off by default — the original CUT recipe is fp32. "
+                        "Only enable this for large datasets where memory is a constraint.")
     p.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N epochs")
     p.add_argument("--resume", default="", help="Path to checkpoint to resume from")
     p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
@@ -92,6 +95,7 @@ def main():
         lr=args.lr,
         n_epochs=args.n_epochs,
         n_epochs_decay=args.n_epochs_decay,
+        use_amp=args.use_amp,
     )
 
     start_epoch = 0

@@ -180,24 +180,33 @@ class ResnetGenerator(nn.Module):
         self.model = nn.ModuleList(layers)
 
     def forward(
-        self, x: torch.Tensor, nce_layers: list[int] | None = None
-    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
+        self,
+        x: torch.Tensor,
+        nce_layers: list[int] | None = None,
+        encode_only: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | list[torch.Tensor]:
         """Forward pass, optionally collecting intermediate features.
 
         Args:
             x: input tensor
             nce_layers: if provided, return (output, [feats]) instead of output
+            encode_only: if True (and nce_layers is provided), stop the forward
+                pass after the last NCE layer and return only [feats]. Used by
+                the CUT NCE loss path to avoid running the decoder unnecessarily.
         """
         if nce_layers is None:
             for layer in self.model:
                 x = layer(x)
             return x
 
+        last_nce = max(nce_layers)
         feats: list[torch.Tensor] = []
         for i, layer in enumerate(self.model):
             x = layer(x)
             if i in nce_layers:
                 feats.append(x)
+            if encode_only and i == last_nce:
+                return feats
         return x, feats
 
 
